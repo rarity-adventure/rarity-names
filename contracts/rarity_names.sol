@@ -18,19 +18,20 @@ contract rarity_names is ERC721Enumerable {
     rarity_manifested constant _rm = rarity_manifested(0xce761D788DF608BD21bdd59d6f4B54b2e27F25Bb);
     rarity_gold constant _gold = rarity_gold(0x2069B76Afe6b734Fb65D1d099E7ec64ee9CC76B2);
 
-    uint public immutable NAME_AUTHORITY = 1337;
+    uint public immutable NAME_AUTHORITY = 1672924;
+    uint public immutable KEEPER = 1672965;
     uint public immutable NAME_GOLD_PRICE = 200e18;
 
     mapping(uint => string) public names;  // token => name
     mapping(uint => uint) public summoner_to_name_id; // summoner => token
     mapping(uint => uint) public name_id_to_summoner; // token => summoner
-    mapping(string => bool) public is_name_claimed;
+    mapping(string => bool) private _is_name_claimed;
 
-    event Claimed(address indexed owner, uint indexed summoner, string name);
-    event Changed(uint indexed previous_summoner, uint indexed new_summoner, string name);
+    event NameClaimed(address indexed owner, uint indexed summoner, string name, uint name_id);
+    event NameUpdated(uint indexed name_id, string old_name, string new_name);
+    event NameAssigned(uint indexed name_id, uint indexed previous_summoner, uint indexed new_summoner);
 
     constructor() ERC721("Rarity Names", "names") {
-
     }
 
     function _isApprovedOrOwner(uint _summoner) internal view returns (bool) {
@@ -41,41 +42,60 @@ contract rarity_names is ERC721Enumerable {
         name = names[summoner_to_name_id[summoner]];
     }
 
+    function is_name_claimed(string memory name) external view returns(bool is_claimed) {
+        is_claimed = _is_name_claimed[to_lower(name)];
+    }
+
     // @dev Claim a name for a summoner. Summoner must hold the required gold.
     function claim(string memory name, uint summoner) public returns (uint name_id){
         require(_isApprovedOrOwner(summoner), '!owner');
         require(validate_name(name), 'invalid name');
         string memory lower_name = to_lower(name);
-        require(!is_name_claimed[lower_name], 'name taken');
-        _gold.transferFrom(NAME_AUTHORITY, summoner, NAME_AUTHORITY, NAME_GOLD_PRICE);
+        require(!_is_name_claimed[lower_name], 'name taken');
+        _gold.transferFrom(NAME_AUTHORITY, summoner, KEEPER, NAME_GOLD_PRICE);
         _mint(msg.sender, next_name);
         name_id = next_name;
         next_name++;
         names[name_id] = name;
-        is_name_claimed[lower_name] = true;
-        transfer_name(name_id, summoner);
+        _is_name_claimed[lower_name] = true;
+        assign_name(name_id, summoner);
+        emit NameClaimed(msg.sender, summoner, name, name_id);
     }
 
-    // @dev Transfer a name to a summoner
-    function transfer_name(uint name_id, uint to) public {
+    // @dev Move a name to a (new) summoner
+    function assign_name(uint name_id, uint to) public {
         require(to > 0, "sorry summoner 0");
-        require(_isApprovedOrOwner(msg.sender, name_id), "!owner or approved");
-        require(summoner_to_name_id[to] > 0, "to already named");
+        require(_isApprovedOrOwner(msg.sender, name_id), "!owner or approved name");
+        require(_isApprovedOrOwner(to), "!owner or approved to");
+        require(summoner_to_name_id[to] == 0, "to already named");
         uint from = name_id_to_summoner[name_id];
         if (from > 0) {
             summoner_to_name_id[from] = 0;
         }
         summoner_to_name_id[to] = name_id;
         name_id_to_summoner[name_id] = to;
+        emit NameAssigned(name_id, from, to);
     }
 
     // @dev Unlink a name from a summoner without transferring it.
-    //      Use transfer_name to reassign the name.
+    //      Use move_name to reassign the name.
     function clear_summoner_name(uint summoner) public {
         uint name_id = summoner_to_name_id[summoner];
         require(_isApprovedOrOwner(summoner) || _isApprovedOrOwner(msg.sender, name_id), "!owner or approved");
         summoner_to_name_id[summoner] = 0;
         name_id_to_summoner[name_id] = 0;
+        emit NameAssigned(name_id, summoner, 0);
+    }
+
+    // @dev Change the capitalization (as it is unique).
+    //      Can't change the name.
+    function update_capitalization(uint name_id, string memory new_name) public {
+        require(_isApprovedOrOwner(msg.sender, name_id), "!owner or approved name");
+        require(validate_name(new_name), 'invalid name');
+        string memory name = names[name_id];
+        require(keccak256(abi.encodePacked(to_lower(name))) == keccak256(abi.encodePacked(to_lower(new_name))), 'name different');
+        names[name_id] = new_name;
+        emit NameUpdated(name_id, name, new_name);
     }
 
     // @dev Check if the name string is valid (Alphanumeric and spaces without leading or trailing space)
